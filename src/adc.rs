@@ -241,12 +241,16 @@ pub struct Vbat;
 #[derive(Default)]
 pub struct Temperature;
 
+pub struct PA0_C;
+pub struct PA1_C;
+
 // Not implementing Pxy_C adc pins
 // Just implmenting INPx pins (INNx defaulting to V_ref-)
 //
 // Refer to DS12110 Rev 7 - Chapter 5 (Table 9)
 adc_pins!(ADC1,
-    // 0, 1 are Pxy_C pins
+    PA0_C => 0,
+    PA1_C => 1,
     gpio::PF11<Analog> => 2,
     gpio::PA6<Analog> => 3,
     gpio::PC4<Analog> => 4,
@@ -268,7 +272,8 @@ adc_pins!(ADC1,
 );
 
 adc_pins!(ADC2,
-    // 0, 1 are Pxy_C pins
+    PA0_C => 0,
+    PA1_C => 1,
     gpio::PF13<Analog> => 2,
     gpio::PA6<Analog> => 3,
     gpio::PC4<Analog> => 4,
