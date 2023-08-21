@@ -65,7 +65,22 @@ pub trait ED {}
 impl ED for Enabled {}
 impl ED for Disabled {}
 
-pub struct Adc<ADC, ED> {
+pub struct SingleEnded;
+
+pub struct Differential;
+
+/// Input Channel
+pub trait IC {
+    const DIFFERENTIAL: bool;
+}
+impl IC for SingleEnded {
+    const DIFFERENTIAL: bool = false;
+}
+impl IC for Differential {
+    const DIFFERENTIAL: bool = true;
+}
+
+pub struct Adc<ADC, ED, IC> {
     rb: ADC,
     sample_time: AdcSampleTime,
     resolution: Resolution,
@@ -73,6 +88,7 @@ pub struct Adc<ADC, ED> {
     clock: Hertz,
     current_channel: Option<u8>,
     _enabled: PhantomData<ED>,
+    _differential: PhantomData<IC>,
 }
 
 /// ADC DMA modes
@@ -210,7 +226,7 @@ macro_rules! adc_internal {
 
                 /// Enables the internal voltage/sensor
                 /// ADC must be disabled.
-                pub fn enable(&mut self, _adc: &Adc<$INT_ADC, Disabled>) {
+                pub fn enable<T: IC>(&mut self, _adc: &Adc<$INT_ADC, Disabled, T>) {
 
                     let common = unsafe { &*$INT_ADC_COMMON::ptr() };
 
@@ -218,7 +234,7 @@ macro_rules! adc_internal {
                 }
                 /// Disables the internal voltage/sdissor
                 /// ADC must be disabled.
-                pub fn disable(&mut self, _adc: &Adc<$INT_ADC, Disabled>) {
+                pub fn disable<T: IC>(&mut self, _adc: &Adc<$INT_ADC, Disabled, T>) {
 
                     let common = unsafe { &*$INT_ADC_COMMON::ptr() };
 
@@ -366,13 +382,13 @@ adc_internal!(
 pub trait AdcExt<ADC>: Sized {
     type Rec: ResetEnable;
 
-    fn adc(
+    fn adc<T: IC>(
         self,
         f_adc: impl Into<Hertz>,
         delay: &mut impl DelayUs<u8>,
         prec: Self::Rec,
         clocks: &CoreClocks,
-    ) -> Adc<ADC, Disabled>;
+    ) -> Adc<ADC, Disabled, T>;
 }
 
 /// Stored ADC config can be restored using the `Adc::restore_cfg` method
@@ -422,17 +438,17 @@ fn kernel_clk_unwrap(
 ///
 /// Sets all configurable parameters to one-shot defaults,
 /// performs a boot-time calibration.
-pub fn adc12(
+pub fn adc12<T: IC>(
     adc1: ADC1,
     adc2: ADC2,
     f_adc: impl Into<Hertz>,
     delay: &mut impl DelayUs<u8>,
     prec: rec::Adc12,
     clocks: &CoreClocks,
-) -> (Adc<ADC1, Disabled>, Adc<ADC2, Disabled>) {
+) -> (Adc<ADC1, Disabled, T>, Adc<ADC2, Disabled, T>) {
     // Consume ADC register block, produce ADC1/2 with default settings
-    let mut adc1 = Adc::<ADC1, Disabled>::default_from_rb(adc1);
-    let mut adc2 = Adc::<ADC2, Disabled>::default_from_rb(adc2);
+    let mut adc1 = Adc::<ADC1, Disabled, T>::default_from_rb(adc1);
+    let mut adc2 = Adc::<ADC2, Disabled, T>::default_from_rb(adc2);
 
     // Check adc_ker_ck_input
     kernel_clk_unwrap(&prec, clocks);
@@ -463,9 +479,9 @@ pub fn adc12(
 /// Free both ADC1 and ADC2 along with PREC.
 ///
 /// Since ADC1 and ADC2 are controlled together, they are freed together.
-pub fn free_adc12<ED>(
-    adc1: Adc<ADC1, ED>,
-    adc2: Adc<ADC2, ED>,
+pub fn free_adc12<ED, IC>(
+    adc1: Adc<ADC1, ED, IC>,
+    adc2: Adc<ADC2, ED, IC>,
 ) -> (ADC1, ADC2, rec::Adc12) {
     (
         adc1.rb,
@@ -478,7 +494,7 @@ pub fn free_adc12<ED>(
 
 #[cfg(not(feature = "rm0455"))]
 /// Freeing both the peripheral and PREC is possible for ADC3
-impl<ED> Adc<ADC3, ED> {
+impl<ED, T: IC> Adc<ADC3, ED, T> {
     /// Releases the ADC peripheral
     pub fn free(self) -> (ADC3, rec::Adc3) {
         (
@@ -503,17 +519,17 @@ macro_rules! adc_hal {
             impl AdcExt<$ADC> for $ADC {
                 type Rec = rec::$Rec;
 
-	            fn adc(self,
+	            fn adc<T: IC>(self,
                        f_adc: impl Into<Hertz>,
                        delay: &mut impl DelayUs<u8>,
                        prec: rec::$Rec,
-                       clocks: &CoreClocks) -> Adc<$ADC, Disabled>
+                       clocks: &CoreClocks) -> Adc<$ADC, Disabled, T>
 	            {
 	                Adc::$adcX(self, f_adc, delay, prec, clocks)
 	            }
 	        }
 
-            impl Adc<$ADC, Disabled> {
+            impl<T: IC> Adc<$ADC, Disabled, T> {
                 /// Initialise ADC
                 ///
                 /// Sets all configurable parameters to one-shot defaults,
@@ -542,6 +558,7 @@ macro_rules! adc_hal {
 
                     adc
                 }
+
                 /// Creates ADC with default settings
                 fn default_from_rb(rb: $ADC) -> Self {
                     Self {
@@ -552,6 +569,7 @@ macro_rules! adc_hal {
                         clock: Hertz::from_raw(0),
                         current_channel: None,
                         _enabled: PhantomData,
+                        _differential: PhantomData,
                     }
                 }
                 /// Sets the clock configuration for this ADC. This is common
@@ -672,9 +690,8 @@ macro_rules! adc_hal {
                     // Refer to RM0433 Rev 7 - Chapter 25.4.8
                     self.check_calibration_conditions();
 
-                    // single channel (INNx equals to V_ref-)
                     self.rb.cr.modify(|_, w|
-                        w.adcaldif().clear_bit()
+                        w.adcaldif().bit(T::DIFFERENTIAL)
                             .adcallin().set_bit()
                     );
                     // calibrate
@@ -702,10 +719,15 @@ macro_rules! adc_hal {
                     self.configure_channels_dif_mode();
                 }
 
-                /// Sets channels to single ended mode
                 fn configure_channels_dif_mode(&mut self) {
-                    self.rb.difsel.reset();
+                    if T::DIFFERENTIAL {
+                        // Super hacky, but couldn't really figure out how else to do it without changing the complete interface
+                        self.rb.difsel.write(|w| w.difsel1().set_bit());
+                    } else {
+                        self.rb.difsel.reset();
+                    }
                 }
+
 
                 /// Configuration process immediately after enabling the ADC
                 fn configure(&mut self) {
@@ -737,7 +759,7 @@ macro_rules! adc_hal {
                 }
 
                 /// Enable ADC
-                pub fn enable(mut self) -> Adc<$ADC, Enabled> {
+                pub fn enable(mut self) -> Adc<$ADC, Enabled, T> {
                     // Refer to RM0433 Rev 7 - Chapter 25.4.9
                     self.rb.isr.modify(|_, w| w.adrdy().set_bit());
                     self.rb.cr.modify(|_, w| w.aden().set_bit());
@@ -754,11 +776,12 @@ macro_rules! adc_hal {
                         clock: self.clock,
                         current_channel: None,
                         _enabled: PhantomData,
+                        _differential: PhantomData,
                     }
                 }
             }
 
-            impl Adc<$ADC, Enabled> {
+            impl<IC> Adc<$ADC, Enabled, IC> {
                 fn stop_regular_conversion(&mut self) {
                     self.rb.cr.modify(|_, w| w.adstp().set_bit());
                     while self.rb.cr.read().adstp().bit_is_set() {}
@@ -801,7 +824,9 @@ macro_rules! adc_hal {
                         })
                     }
                 }
+            }
 
+            impl Adc<$ADC, Enabled, SingleEnded> {
                 // This method starts a conversion sequence on the given channel
                 fn start_conversion_common(&mut self, chan: u8) {
                     self.check_conversion_conditions();
@@ -865,7 +890,81 @@ macro_rules! adc_hal {
 
                     self.start_conversion_common(chan);
                 }
+            }
 
+            impl Adc<$ADC, Enabled, Differential> {
+                // This method starts a conversion sequence on the given channel
+                fn start_conversion_common(&mut self, chan_p: u8, chan_n: u8) {
+                    self.check_conversion_conditions();
+
+                    // Set LSHIFT[3:0]
+                    self.rb.cfgr2.modify(|_, w| w.lshift().bits(self.get_lshift().value()));
+
+                    // Select channel (with preselection, refer to RM0433 Rev 7 - Chapter 25.4.12)
+                    self.rb.pcsel.modify(|r, w| unsafe { w.pcsel().bits(r.pcsel().bits() | (1 << chan_p) | (1 << chan_n)) });
+                    self.set_chan_smp(chan_p);
+                    self.rb.sqr1.modify(|_, w| unsafe {
+                        w.sq1().bits(chan_p)
+                            .l().bits(0)
+                    });
+                    self.current_channel = Some(chan_p);
+
+                    // Perform conversion
+                    self.rb.cr.modify(|_, w| w.adstart().set_bit());
+                }
+
+                /// Start conversion
+                ///
+                /// This method starts a conversion sequence on the given pin.
+                /// The value can be then read through the `read_sample` method.
+                // Refer to RM0433 Rev 7 - Chapter 25.4.16
+                pub fn start_conversion<PIN_P, PIN_N>(&mut self, _pin_p: &mut PIN_P, _pin_n: &mut PIN_N)
+                    where PIN_P: Channel<$ADC, ID = u8>, PIN_N: Channel<$ADC, ID = u8>,
+                {
+                    let chan_p = PIN_P::channel();
+                    assert!(chan_p <= 19);
+
+                    let chan_n = PIN_N::channel();
+                    assert!(chan_n <= 19);
+
+                    // Set resolution
+                    self.rb.cfgr.modify(|_, w| unsafe { w.res().bits(self.get_resolution().into()) });
+                    // Set discontinuous mode
+                    self.rb.cfgr.modify(|_, w| w.cont().clear_bit().discen().set_bit());
+
+                    self.start_conversion_common(chan_p, chan_n);
+                }
+
+                /// Start conversion in DMA mode
+                ///
+                /// This method starts a conversion sequence with DMA
+                /// enabled. The DMA mode selected depends on the [`AdcDmaMode`] specified.
+                pub fn start_conversion_dma<PIN_P, PIN_N>(&mut self, _pin_p: &mut PIN_P, _pin_n: &mut PIN_N, mode: AdcDmaMode)
+                    where PIN_P: Channel<$ADC, ID = u8>, PIN_N: Channel<$ADC, ID = u8>,
+                {
+                    let chan_p = PIN_P::channel();
+                    assert!(chan_p <= 19);
+
+                    let chan_n = PIN_N::channel();
+                    assert!(chan_n <= 19);
+
+                    // Set resolution
+                    self.rb.cfgr.modify(|_, w| unsafe { w.res().bits(self.get_resolution().into()) });
+
+
+                    self.rb.cfgr.modify(|_, w| w.dmngt().bits(match mode {
+                        AdcDmaMode::OneShot => 0b01,
+                        AdcDmaMode::Circular => 0b11,
+                    }));
+
+                    // Set continuous mode
+                    self.rb.cfgr.modify(|_, w| w.cont().set_bit().discen().clear_bit() );
+
+                    self.start_conversion_common(chan_p, chan_n);
+                }
+            }
+
+            impl<IC> Adc<$ADC, Enabled, IC> {
 
                 /// Read sample
                 ///
@@ -908,7 +1007,7 @@ macro_rules! adc_hal {
                 }
 
                 /// Disable ADC
-                pub fn disable(mut self) -> Adc<$ADC, Disabled> {
+                pub fn disable(mut self) -> Adc<$ADC, Disabled, IC> {
                     let cr = self.rb.cr.read();
                     // Refer to RM0433 Rev 7 - Chapter 25.4.9
                     if cr.adstart().bit_is_set() {
@@ -929,11 +1028,12 @@ macro_rules! adc_hal {
                         clock: self.clock,
                         current_channel: None,
                         _enabled: PhantomData,
+                        _differential: PhantomData,
                     }
                 }
             }
 
-            impl<ED> Adc<$ADC, ED> {
+            impl<ED, IC> Adc<$ADC, ED, IC> {
                 /// Save current ADC config
                 pub fn save_cfg(&mut self) -> StoredConfig {
                     StoredConfig(self.get_sample_time(), self.get_resolution(), self.get_lshift())
@@ -1117,7 +1217,7 @@ macro_rules! adc_hal {
                 }
             }
 
-            impl<WORD, PIN> OneShot<$ADC, WORD, PIN> for Adc<$ADC, Enabled>
+            impl<WORD, PIN> OneShot<$ADC, WORD, PIN> for Adc<$ADC, Enabled, SingleEnded>
             where
                 WORD: From<u32>,
                 PIN: Channel<$ADC, ID = u8>,
