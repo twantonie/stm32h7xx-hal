@@ -14,6 +14,7 @@ use core::marker::PhantomData;
 use crate::{
     adc,
     adc::Adc,
+    adc::IC,
     i2c::I2c,
     pac::{self, DMA1, DMA2, DMAMUX1},
     rcc::{rec, rec::ResetEnable},
@@ -1153,27 +1154,58 @@ peripheral_target_address!(
     ),
 );
 
-peripheral_target_address!(
-    (
-        HAL: Adc<pac::ADC1, adc::Enabled>,
-        dr,
-        u16,
-        P2M,
-        DMAReq::Adc1Dma
-    ),
-    (
-        HAL: Adc<pac::ADC2, adc::Enabled>,
-        dr,
-        u16,
-        P2M,
-        DMAReq::Adc2Dma
-    )
-);
+unsafe impl TargetAddress<P2M> for pac::ADC1 {
+    #[inline(always)]
+    fn address(&self) -> usize {
+        &self.dr as *const _ as usize
+    }
+    type MemSize = u16;
+    const REQUEST_LINE: Option<u8> = Some((DMAReq::Adc1Dma) as u8);
+}
+
+unsafe impl<T: IC> TargetAddress<P2M> for Adc<pac::ADC1, adc::Enabled, T> {
+    #[inline(always)]
+    fn address(&self) -> usize {
+        &self.inner().dr as *const _ as usize
+    }
+    type MemSize = u16;
+    const REQUEST_LINE: Option<u8> = Some((DMAReq::Adc1Dma) as u8);
+}
+
+unsafe impl TargetAddress<P2M> for pac::ADC2 {
+    #[inline(always)]
+    fn address(&self) -> usize {
+        &self.dr as *const _ as usize
+    }
+    type MemSize = u16;
+    const REQUEST_LINE: Option<u8> = Some((DMAReq::Adc2Dma) as u8);
+}
+
+unsafe impl<T: IC> TargetAddress<P2M> for Adc<pac::ADC2, adc::Enabled, T> {
+    #[inline(always)]
+    fn address(&self) -> usize {
+        &self.inner().dr as *const _ as usize
+    }
+    type MemSize = u16;
+    const REQUEST_LINE: Option<u8> = Some((DMAReq::Adc2Dma) as u8);
+}
+
 #[cfg(not(feature = "rm0455"))]
-peripheral_target_address!((
-    HAL: Adc<pac::ADC3, adc::Enabled>,
-    dr,
-    u16,
-    P2M,
-    DMAReq::Adc3Dma
-));
+unsafe impl TargetAddress<P2M> for pac::ADC3 {
+    #[inline(always)]
+    fn address(&self) -> usize {
+        &self.dr as *const _ as usize
+    }
+    type MemSize = u16;
+    const REQUEST_LINE: Option<u8> = Some((DMAReq::Adc3Dma) as u8);
+}
+
+#[cfg(not(feature = "rm0455"))]
+unsafe impl<T: IC> TargetAddress<P2M> for Adc<pac::ADC3, adc::Enabled, T> {
+    #[inline(always)]
+    fn address(&self) -> usize {
+        &self.inner().dr as *const _ as usize
+    }
+    type MemSize = u16;
+    const REQUEST_LINE: Option<u8> = Some((DMAReq::Adc3Dma) as u8);
+}
