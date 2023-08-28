@@ -80,6 +80,7 @@ use crate::stm32::rcc::{cdccip1r as ccip1r, srdccipr};
 use crate::stm32::rcc::{d2ccip1r as ccip1r, d3ccipr as srdccipr};
 use crate::stm32::spi1::{
     cfg1::MBR_A as MBR, cfg2::COMM_A as COMM, cfg2::SSIOP_A as SSIOP,
+    cr1::SSI_A as SSI,
 };
 use crate::stm32::{SPI1, SPI2, SPI3, SPI4, SPI5, SPI6};
 use crate::time::Hertz;
@@ -237,6 +238,51 @@ impl Config {
 }
 
 impl From<Mode> for Config {
+    fn from(mode: Mode) -> Self {
+        Self::new(mode)
+    }
+}
+
+pub struct SlaveConfig {
+    mode: Mode,
+    swap_miso_mosi: bool,
+    communication_mode: CommunicationMode,
+    // TODO: Missing CS
+}
+
+impl SlaveConfig {
+    /// Create a default configuration for the SPI interface.
+    ///
+    /// Arguments:
+    /// * `mode` - The SPI mode to configure.
+    pub fn new(mode: Mode) -> Self {
+        SlaveConfig {
+            mode,
+            swap_miso_mosi: false,
+            communication_mode: CommunicationMode::FullDuplex,
+        }
+    }
+
+    /// Specify that the SPI MISO/MOSI lines are swapped.
+    ///
+    /// Note:
+    /// * This function updates the HAL peripheral to treat the pin provided in the MISO parameter
+    /// as the MOSI pin and the pin provided in the MOSI parameter as the MISO pin.
+    #[must_use]
+    pub fn swap_mosi_miso(mut self) -> Self {
+        self.swap_miso_mosi = true;
+        self
+    }
+
+    /// Select the communication mode of the SPI bus.
+    #[must_use]
+    pub fn communication_mode(mut self, mode: CommunicationMode) -> Self {
+        self.communication_mode = mode;
+        self
+    }
+}
+
+impl From<Mode> for SlaveConfig {
     fn from(mode: Mode) -> Self {
         Self::new(mode)
     }
@@ -526,6 +572,7 @@ pub enum Event {
 pub struct Spi<SPI, ED, WORD = u8> {
     spi: SPI,
     hardware_cs_mode: HardwareCSMode,
+    slave: SSI,
     _word: PhantomData<WORD>,
     _ed: PhantomData<ED>,
 }
@@ -554,6 +601,16 @@ pub trait SpiExt<SPI, WORD>: Sized {
     ) -> Spi<SPI, Enabled, WORD>
     where
         CONFIG: Into<Config>;
+
+    fn spi_slave<PINS, CONFIG>(
+        self,
+        _pins: PINS,
+        config: CONFIG,
+        prec: Self::Rec,
+    ) -> Spi<SPI, Enabled, WORD>
+    where
+        PINS: Pins<SPI>,
+        CONFIG: Into<SlaveConfig>;
 }
 
 pub trait HalEnabledSpi:
@@ -810,8 +867,75 @@ macro_rules! spi {
                         // spe: enable the SPI bus
                         spi.cr1.write(|w| w.ssi().slave_not_selected().spe().enabled());
 
-                        Spi { spi, hardware_cs_mode: config.hardware_cs.mode, _word: PhantomData, _ed: PhantomData }
+                        Spi { spi, hardware_cs_mode: config.hardware_cs.mode, slave: SSI::SlaveNotSelected, _word: PhantomData, _ed: PhantomData }
                     }
+
+                    fn slave<CONFIG>(
+                        spi: $SPIX,
+                        config: CONFIG,
+                        prec: rec::$Rec,
+                    ) -> Self
+                    where
+                        CONFIG: Into<SlaveConfig>,
+                    {
+                        // Enable clock for SPI
+                        let _ = prec.enable(); // drop, can be recreated by free method
+
+                        // Disable SS output
+                        spi.cfg2.write(|w| w.ssoe().disabled());
+
+                        let config: SlaveConfig = config.into();
+
+                        spi!(DSIZE, spi, $TY); // modify CFG1 for DSIZE
+
+                        // ssi: select slave = slave mode
+                        spi.cr1.write(|w| w.ssi().slave_selected());
+
+                        spi.cfg1.modify(|_, w| w.udrdet().end_of_frame().udrcfg().constant());
+
+                        // The calculated cycle delay may not be more than 4 bits wide for the
+                        // configuration register.
+                        let communication_mode = match config.communication_mode {
+                            CommunicationMode::Transmitter => COMM::Transmitter,
+                            CommunicationMode::Receiver => COMM::Receiver,
+                            CommunicationMode::FullDuplex => COMM::FullDuplex,
+                        };
+
+                        // mstr: master configuration
+                        // lsbfrst: MSB first
+                        // comm: full-duplex
+                        spi.cfg2.write(|w| {
+                            w.cpha()
+                                .bit(config.mode.phase ==
+                                     Phase::CaptureOnSecondTransition)
+                                .cpol()
+                                .bit(config.mode.polarity == Polarity::IdleHigh)
+                                .master()
+                                .master()
+                                .lsbfrst()
+                                .msbfirst()
+                                .ssm()
+                                .enabled()
+                                .ioswp()
+                                .bit(config.swap_miso_mosi == true)
+                                .comm()
+                                .variant(communication_mode)
+                                .ssiop()
+                                .active_low()
+                        });
+
+                        // Reset to default (might have been set if previously used by a frame transaction)
+                        // So that is 1 when it's a frame transaction and 0 when in another mode
+                        spi.cr2.write(|w| w);
+
+                        spi.ifcr.write(|w| w.modfc().clear());
+
+                        // spe: enable the SPI bus
+                        spi.cr1.write(|w| w.ssi().slave_selected().spe().enabled());
+
+                        Spi { spi, hardware_cs_mode: HardwareCSMode::Disabled, slave: SSI::SlaveSelected, _word: PhantomData, _ed: PhantomData }
+                    }
+
                 }
 
                 impl <Ed> Spi<$SPIX, Ed, $TY> {
@@ -819,13 +943,13 @@ macro_rules! spi {
                     fn internal_disable(&mut self) {
                         self.spi.cr1.modify(|_, w| w.csusp().requested());
                         while self.spi.sr.read().eot().is_completed() {}
-                        self.spi.cr1.write(|w| w.ssi().slave_not_selected().spe().disabled());
+                        self.spi.cr1.write(|w| w.ssi().variant(self.slave).spe().disabled());
                     }
 
                     /// internally enable the SPI without changing its type-state
                     fn internal_enable(&mut self) {
                         self.clear_modf(); // SPE cannot be set when MODF is set
-                        self.spi.cr1.write(|w| w.ssi().slave_not_selected().spe().enabled());
+                        self.spi.cr1.write(|w| w.ssi().variant(self.slave).spe().enabled());
                     }
                 }
 
@@ -844,6 +968,7 @@ macro_rules! spi {
                         Spi {
                             spi: self.spi,
                             hardware_cs_mode: self.hardware_cs_mode,
+                            slave: self.slave,
                             _word: PhantomData,
                             _ed: PhantomData,
                         }
@@ -861,14 +986,14 @@ macro_rules! spi {
                         // We can only set tsize when spi is disabled
                         self.spi.cr1.modify(|_, w| w.csusp().requested());
                         while self.spi.sr.read().eot().is_completed() {}
-                        self.spi.cr1.write(|w| w.ssi().slave_not_selected().spe().disabled());
+                        self.spi.cr1.write(|w| w.ssi().variant(self.slave).spe().disabled());
 
                         // Set the frame size
                         self.spi.cr2.write(|w| w.tsize().bits(words.get()));
 
                         // Re-enable
                         self.clear_modf(); // SPE cannot be set when MODF is set
-                        self.spi.cr1.write(|w| w.ssi().slave_not_selected().spe().enabled());
+                        self.spi.cr1.write(|w| w.ssi().variant(self.slave).spe().enabled());
 
                         Ok(())
                     }
@@ -896,6 +1021,7 @@ macro_rules! spi {
                         Spi {
                             spi: self.spi,
                             hardware_cs_mode: self.hardware_cs_mode,
+                            slave: self.slave,
                             _word: PhantomData,
                             _ed: PhantomData,
                         }
@@ -1056,6 +1182,17 @@ macro_rules! spi {
 	                {
 	                    Spi::<$SPIX, Enabled, $TY>::$spiX(self, config, freq, prec, clocks)
 	                }
+
+                    fn spi_slave<PINS, CONFIG>(self,
+                        _pins: PINS,
+                        config: CONFIG,
+                        prec: rec::$Rec) -> Spi<$SPIX, Enabled, $TY>
+                    where
+                    	PINS: Pins<$SPIX>,
+                        CONFIG: Into<SlaveConfig>
+                    {
+	                    Spi::<$SPIX, Enabled, $TY>::slave(self, config, prec)
+                    }
 	            }
 
                 impl hal::spi::FullDuplex<$TY> for Spi<$SPIX, Enabled, $TY> {
@@ -1091,7 +1228,9 @@ macro_rules! spi {
                                 }
                                 // write CSTART to start a transaction in
                                 // master mode
-                                self.spi.cr1.modify(|_, w| w.cstart().started());
+                                if self.slave == SSI::SlaveNotSelected {
+                                    self.spi.cr1.modify(|_, w| w.cstart().started());
+                                }
 
                                 return Ok(());
                             }
