@@ -751,6 +751,10 @@ macro_rules! db_transfer_def {
             pub fn get_half_transfer_flag(&self) -> bool {
                 STREAM::get_half_transfer_flag()
             }
+
+            pub fn peripheral(&self) -> &PERIPHERAL {
+                &self.peripheral
+            }
         }
     };
 }
