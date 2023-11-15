@@ -717,12 +717,15 @@ macro_rules! db_transfer_def {
             /// before and after accessing the buffer.
             pub unsafe fn next_dbm_transfer_with<F, T>(
                 &mut self,
+                wait_for_transfer_complete: bool,
                 func: F,
             ) -> Result<T, DMAError>
             where
                 F: FnOnce(&mut BUF, CurrentBuffer) -> T,
             {
-                while !STREAM::get_transfer_complete_flag() { }
+                if wait_for_transfer_complete {
+                    while !STREAM::get_transfer_complete_flag() { }
+                }
                 self.stream.clear_transfer_complete_flag();
 
                 // NOTE(unwrap): Panic if stream not configured in double buffer mode.
