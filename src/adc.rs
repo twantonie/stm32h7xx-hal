@@ -720,12 +720,7 @@ macro_rules! adc_hal {
                 }
 
                 fn configure_channels_dif_mode(&mut self) {
-                    if T::DIFFERENTIAL {
-                        // Super hacky, but couldn't really figure out how else to do it without changing the complete interface
-                        self.rb.difsel.write(|w| w.difsel1().set_bit());
-                    } else {
-                        self.rb.difsel.reset();
-                    }
+                    self.rb.difsel.reset();
                 }
 
 
