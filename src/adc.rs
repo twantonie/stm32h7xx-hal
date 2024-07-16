@@ -823,8 +823,12 @@ macro_rules! adc_hal {
 
             impl Adc<$ADC, Enabled, SingleEnded> {
                 // This method starts a conversion sequence on the given channel
-                fn start_conversion_common(&mut self, chan: u8) {
+                fn start_conversion_common(&mut self, chan: u8, start: bool) {
+                    assert!(chan <= 19);
                     self.check_conversion_conditions();
+
+                    // Set resolution
+                    self.rb.cfgr.modify(|_, w| unsafe { w.res().bits(self.get_resolution().into()) });
 
                     // Set LSHIFT[3:0]
                     self.rb.cfgr2.modify(|_, w| w.lshift().bits(self.get_lshift().value()));
@@ -839,7 +843,21 @@ macro_rules! adc_hal {
                     self.current_channel = Some(chan);
 
                     // Perform conversion
-                    self.rb.cr.modify(|_, w| w.adstart().set_bit());
+                    if start {
+                        self.rb.cr.modify(|_, w| w.adstart().set_bit());
+                    }
+                }
+
+                pub fn start_continuous_conversion<PIN>(&mut self, _pin: &mut PIN, start: bool)
+                    where PIN: Channel<$ADC, ID = u8>
+                {
+                    // Set continuous mode
+                    self.rb.cfgr.modify(|_, w| w.cont().set_bit().discen().clear_bit());
+
+                    // Have no fifo, always read latest results
+                    self.rb.cfgr.modify(|_, w| w.ovrmod().set_bit());
+
+                    self.start_conversion_common(PIN::channel(), start);
                 }
 
                 /// Start conversion
@@ -850,15 +868,10 @@ macro_rules! adc_hal {
                 pub fn start_conversion<PIN>(&mut self, _pin: &mut PIN)
                     where PIN: Channel<$ADC, ID = u8>,
                 {
-                    let chan = PIN::channel();
-                    assert!(chan <= 19);
-
-                    // Set resolution
-                    self.rb.cfgr.modify(|_, w| unsafe { w.res().bits(self.get_resolution().into()) });
                     // Set discontinuous mode
                     self.rb.cfgr.modify(|_, w| w.cont().clear_bit().discen().set_bit());
 
-                    self.start_conversion_common(chan);
+                    self.start_conversion_common(PIN::channel(), true);
                 }
 
                 /// Start conversion in DMA mode
@@ -868,13 +881,6 @@ macro_rules! adc_hal {
                 pub fn start_conversion_dma<PIN>(&mut self, _pin: &mut PIN, mode: AdcDmaMode)
                     where PIN: Channel<$ADC, ID = u8>,
                 {
-                    let chan = PIN::channel();
-                    assert!(chan <= 19);
-
-                    // Set resolution
-                    self.rb.cfgr.modify(|_, w| unsafe { w.res().bits(self.get_resolution().into()) });
-
-
                     self.rb.cfgr.modify(|_, w| w.dmngt().bits(match mode {
                         AdcDmaMode::OneShot => 0b01,
                         AdcDmaMode::Circular => 0b11,
@@ -883,14 +889,19 @@ macro_rules! adc_hal {
                     // Set continuous mode
                     self.rb.cfgr.modify(|_, w| w.cont().set_bit().discen().clear_bit() );
 
-                    self.start_conversion_common(chan);
+                    self.start_conversion_common(PIN::channel(), true);
                 }
             }
 
             impl Adc<$ADC, Enabled, Differential> {
                 // This method starts a conversion sequence on the given channel
-                fn start_conversion_common(&mut self, chan_p: u8, chan_n: u8) {
+                fn start_conversion_common(&mut self, chan_p: u8, chan_n: u8, start: bool) {
+                    assert!(chan_p <= 19);
+                    assert!(chan_n <= 19);
                     self.check_conversion_conditions();
+
+                    // Set resolution
+                    self.rb.cfgr.modify(|_, w| unsafe { w.res().bits(self.get_resolution().into()) });
 
                     // Set LSHIFT[3:0]
                     self.rb.cfgr2.modify(|_, w| w.lshift().bits(self.get_lshift().value()));
@@ -905,7 +916,21 @@ macro_rules! adc_hal {
                     self.current_channel = Some(chan_p);
 
                     // Perform conversion
-                    self.rb.cr.modify(|_, w| w.adstart().set_bit());
+                    if start {
+                        self.rb.cr.modify(|_, w| w.adstart().set_bit());
+                    }
+                }
+
+                pub fn start_continuous_conversion<PIN_P, PIN_N>(&mut self, _pin_p: &mut PIN_P, _pin_n: &mut PIN_N, start: bool)
+                    where PIN_P: Channel<$ADC, ID = u8>, PIN_N: Channel<$ADC, ID = u8>,
+                {
+                    // Set continuous mode
+                    self.rb.cfgr.modify(|_, w| w.cont().set_bit().discen().clear_bit());
+
+                    // Have no fifo, always read latest results
+                    self.rb.cfgr.modify(|_, w| w.ovrmod().set_bit());
+
+                    self.start_conversion_common(PIN_P::channel(), PIN_N::channel(), start);
                 }
 
                 /// Start conversion
@@ -916,18 +941,10 @@ macro_rules! adc_hal {
                 pub fn start_conversion<PIN_P, PIN_N>(&mut self, _pin_p: &mut PIN_P, _pin_n: &mut PIN_N)
                     where PIN_P: Channel<$ADC, ID = u8>, PIN_N: Channel<$ADC, ID = u8>,
                 {
-                    let chan_p = PIN_P::channel();
-                    assert!(chan_p <= 19);
-
-                    let chan_n = PIN_N::channel();
-                    assert!(chan_n <= 19);
-
-                    // Set resolution
-                    self.rb.cfgr.modify(|_, w| unsafe { w.res().bits(self.get_resolution().into()) });
                     // Set discontinuous mode
                     self.rb.cfgr.modify(|_, w| w.cont().clear_bit().discen().set_bit());
 
-                    self.start_conversion_common(chan_p, chan_n);
+                    self.start_conversion_common(PIN_P::channel(), PIN_N::channel(), true);
                 }
 
                 /// Start conversion in DMA mode
@@ -937,16 +954,6 @@ macro_rules! adc_hal {
                 pub fn start_conversion_dma<PIN_P, PIN_N>(&mut self, _pin_p: &mut PIN_P, _pin_n: &mut PIN_N, mode: AdcDmaMode)
                     where PIN_P: Channel<$ADC, ID = u8>, PIN_N: Channel<$ADC, ID = u8>,
                 {
-                    let chan_p = PIN_P::channel();
-                    assert!(chan_p <= 19);
-
-                    let chan_n = PIN_N::channel();
-                    assert!(chan_n <= 19);
-
-                    // Set resolution
-                    self.rb.cfgr.modify(|_, w| unsafe { w.res().bits(self.get_resolution().into()) });
-
-
                     self.rb.cfgr.modify(|_, w| w.dmngt().bits(match mode {
                         AdcDmaMode::OneShot => 0b01,
                         AdcDmaMode::Circular => 0b11,
@@ -955,7 +962,7 @@ macro_rules! adc_hal {
                     // Set continuous mode
                     self.rb.cfgr.modify(|_, w| w.cont().set_bit().discen().clear_bit() );
 
-                    self.start_conversion_common(chan_p, chan_n);
+                    self.start_conversion_common(PIN_P::channel(), PIN_N::channel(), true);
                 }
             }
 
