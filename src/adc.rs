@@ -776,6 +776,16 @@ macro_rules! adc_hal {
                 }
             }
 
+            impl Adc<$ADC, Disabled, Differential> {
+                pub fn set_differential_pin<PIN_P>(&mut self, _pin: &mut PIN_P)
+                    where PIN_P: Channel<$ADC, ID = u8>
+                {
+                    let chan = PIN_P::channel();
+                    assert!(chan <= 19);
+                    self.rb.difsel.modify(|r, w| unsafe { w.bits(r.bits() | 1 << chan) });
+                }
+            }
+
             impl<IC> Adc<$ADC, Enabled, IC> {
                 fn stop_regular_conversion(&mut self) {
                     self.rb.cr.modify(|_, w| w.adstp().set_bit());
