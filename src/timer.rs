@@ -282,6 +282,36 @@ pub enum Event {
     TimeOut,
 }
 
+pub trait HalTimer {
+    fn set_freq(&mut self, timeout: Hertz);
+
+    fn set_timeout<T>(&mut self, timeout: T)
+    where
+        T: Into<core::time::Duration>;
+
+    fn set_tick_freq(&mut self, frequency: Hertz);
+
+    fn apply_freq(&mut self);
+
+    fn pause(&mut self);
+
+    fn resume(&mut self);
+
+    fn urs_counter_only(&mut self);
+
+    fn reset_counter(&mut self);
+
+    fn counter(&self) -> u32;
+
+    fn listen(&mut self, event: Event);
+
+    fn unlisten(&mut self, event: Event);
+
+    fn is_irq_clear(&mut self) -> bool;
+
+    fn clear_irq(&mut self);
+}
+
 macro_rules! hal {
     ($($TIMX:ident: ($timX:ident, $Rec:ident, $cntType:ty),)+) => {
         $(
@@ -379,9 +409,49 @@ macro_rules! hal {
                     }
                 }
 
+                /// Sets the timer's prescaler and auto reload register so that the timer will reach
+                /// the ARR after `ticks - 1` amount of timer clock ticks.
+                ///
+                /// ```
+                /// // Set auto reload register to 50000 and prescaler to divide by 2.
+                /// timer.set_timeout_ticks(100000);
+                /// ```
+                ///
+                /// This function will round down if the prescaler is used to extend the range:
+                /// ```
+                /// // Set auto reload register to 50000 and prescaler to divide by 2.
+                /// timer.set_timeout_ticks(100001);
+                /// ```
+                fn set_timeout_ticks(&mut self, ticks: u32) {
+                    let (psc, arr) = calculate_timeout_ticks_register_values(ticks);
+                    self.tim.psc.write(|w| w.psc().bits(psc));
+                    #[allow(unused_unsafe)] // method is safe for some timers
+                    self.tim.arr.write(|w| unsafe { w.bits(u32(arr)) });
+                }
+
+                /// Releases the TIM peripheral
+                pub fn free(mut self) -> ($TIMX, rec::$Rec) {
+                    // pause counter
+                    self.pause();
+
+                    (self.tim, rec::$Rec { _marker: PhantomData })
+                }
+
+                /// Returns a reference to the inner peripheral
+                pub fn inner(&self) -> &$TIMX {
+                    &self.tim
+                }
+
+                /// Returns a mutable reference to the inner peripheral
+                pub fn inner_mut(&mut self) -> &mut $TIMX {
+                    &mut self.tim
+                }
+            }
+
+            impl HalTimer for Timer<$TIMX> {
                 /// Configures the timer's frequency and counter reload value
                 /// so that it underflows at the timeout's frequency
-                pub fn set_freq(&mut self, timeout: Hertz) {
+                fn set_freq(&mut self, timeout: Hertz) {
                     let ticks = self.clk / timeout.raw();
 
                     self.set_timeout_ticks(ticks);
@@ -406,7 +476,7 @@ macro_rules! hal {
                 /// // Set timeout to 2.5µs
                 /// timer.set_timeout(duration);
                 /// ```
-                pub fn set_timeout<T>(&mut self, timeout: T)
+                fn set_timeout<T>(&mut self, timeout: T)
                 where
                     T: Into<core::time::Duration>
                 {
@@ -423,32 +493,13 @@ macro_rules! hal {
                     self.set_timeout_ticks(ticks.max(1));
                 }
 
-                /// Sets the timer's prescaler and auto reload register so that the timer will reach
-                /// the ARR after `ticks - 1` amount of timer clock ticks.
-                ///
-                /// ```
-                /// // Set auto reload register to 50000 and prescaler to divide by 2.
-                /// timer.set_timeout_ticks(100000);
-                /// ```
-                ///
-                /// This function will round down if the prescaler is used to extend the range:
-                /// ```
-                /// // Set auto reload register to 50000 and prescaler to divide by 2.
-                /// timer.set_timeout_ticks(100001);
-                /// ```
-                fn set_timeout_ticks(&mut self, ticks: u32) {
-                    let (psc, arr) = calculate_timeout_ticks_register_values(ticks);
-                    self.tim.psc.write(|w| w.psc().bits(psc));
-                    #[allow(unused_unsafe)] // method is safe for some timers
-                    self.tim.arr.write(|w| unsafe { w.bits(u32(arr)) });
-                }
 
                 /// Configures the timer to count up at the given frequency
                 ///
                 /// Counts from 0 to the counter's maximum value, then repeats.
                 /// Because this only uses the timer prescaler, the frequency
                 /// is rounded to a multiple of the timer's kernel clock.
-                pub fn set_tick_freq(&mut self, frequency: Hertz) {
+                fn set_tick_freq(&mut self, frequency: Hertz) {
                     let div = self.clk / frequency.raw();
 
                     let psc = u16(div - 1).unwrap();
@@ -464,37 +515,37 @@ macro_rules! hal {
                 /// The timer will normally update its prescaler and auto-reload
                 /// value when its counter overflows. This function causes
                 /// those changes to happen immediately. Also clears the counter.
-                pub fn apply_freq(&mut self) {
+                fn apply_freq(&mut self) {
                     self.tim.egr.write(|w| w.ug().set_bit());
                 }
 
                 /// Pauses the TIM peripheral
-                pub fn pause(&mut self) {
+                fn pause(&mut self) {
                     self.tim.cr1.modify(|_, w| w.cen().clear_bit());
                 }
 
                 /// Resume (unpause) the TIM peripheral
-                pub fn resume(&mut self) {
+                fn resume(&mut self) {
                     self.tim.cr1.modify(|_, w| w.cen().set_bit());
                 }
 
                 /// Set Update Request Source to counter overflow/underflow only
-                pub fn urs_counter_only(&mut self) {
+                fn urs_counter_only(&mut self) {
                     self.tim.cr1.modify(|_, w| w.urs().counter_only());
                 }
 
                 /// Reset the counter of the TIM peripheral
-                pub fn reset_counter(&mut self) {
+                fn reset_counter(&mut self) {
                     self.tim.cnt.reset();
                 }
 
                 /// Read the counter of the TIM peripheral
-                pub fn counter(&self) -> u32 {
+                fn counter(&self) -> u32 {
                     self.tim.cnt.read().cnt().bits().into()
                 }
 
                 /// Start listening for `event`
-                pub fn listen(&mut self, event: Event) {
+                fn listen(&mut self, event: Event) {
                     match event {
                         Event::TimeOut => {
                             // Enable update event interrupt
@@ -504,7 +555,7 @@ macro_rules! hal {
                 }
 
                 /// Stop listening for `event`
-                pub fn unlisten(&mut self, event: Event) {
+                fn unlisten(&mut self, event: Event) {
                     match event {
                         Event::TimeOut => {
                             // Disable update event interrupt
@@ -516,12 +567,12 @@ macro_rules! hal {
                 }
 
                 /// Check if Update Interrupt flag is cleared
-                pub fn is_irq_clear(&mut self) -> bool {
+                fn is_irq_clear(&mut self) -> bool {
                     self.tim.sr.read().uif().bit_is_clear()
                 }
 
                 /// Clears interrupt flag
-                pub fn clear_irq(&mut self) {
+                fn clear_irq(&mut self) {
                     self.tim.sr.modify(|_, w| {
                         // Clears timeout event
                         w.uif().clear_bit()
@@ -529,25 +580,8 @@ macro_rules! hal {
                     let _ = self.tim.sr.read();
                     let _ = self.tim.sr.read(); // Delay 2 peripheral clocks
                 }
-
-                /// Releases the TIM peripheral
-                pub fn free(mut self) -> ($TIMX, rec::$Rec) {
-                    // pause counter
-                    self.pause();
-
-                    (self.tim, rec::$Rec { _marker: PhantomData })
-                }
-
-                /// Returns a reference to the inner peripheral
-                pub fn inner(&self) -> &$TIMX {
-                    &self.tim
-                }
-
-                /// Returns a mutable reference to the inner peripheral
-                pub fn inner_mut(&mut self) -> &mut $TIMX {
-                    &mut self.tim
-                }
             }
+
         )+
     }
 }
