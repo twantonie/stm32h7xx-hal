@@ -611,6 +611,14 @@ pub trait SpiExt<SPI, WORD>: Sized {
     where
         PINS: Pins<SPI>,
         CONFIG: Into<SlaveConfig>;
+
+    fn spi_slave_unchecked<CONFIG>(
+        self,
+        config: CONFIG,
+        prec: Self::Rec,
+    ) -> Spi<SPI, Enabled, WORD>
+    where
+        CONFIG: Into<SlaveConfig>;
 }
 
 pub trait HalEnabledSpi:
@@ -1189,6 +1197,17 @@ macro_rules! spi {
                         prec: rec::$Rec) -> Spi<$SPIX, Enabled, $TY>
                     where
                     	PINS: Pins<$SPIX>,
+                        CONFIG: Into<SlaveConfig>
+                    {
+	                    Spi::<$SPIX, Enabled, $TY>::slave(self, config, prec)
+                    }
+
+                    fn spi_slave_unchecked<CONFIG>(
+                        self,
+                        config: CONFIG,
+                        prec: Self::Rec,
+                    ) -> Spi<$SPIX, Enabled, $TY>
+                    where
                         CONFIG: Into<SlaveConfig>
                     {
 	                    Spi::<$SPIX, Enabled, $TY>::slave(self, config, prec)
