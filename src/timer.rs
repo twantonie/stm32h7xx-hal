@@ -311,7 +311,7 @@ pub trait HalTimer {
 
     fn unlisten(&mut self, event: Event);
 
-    fn is_irq_clear(&mut self) -> bool;
+    fn is_irq_clear(&self) -> bool;
 
     fn clear_irq(&mut self);
 }
@@ -589,7 +589,7 @@ macro_rules! hal {
                 }
 
                 /// Check if Update Interrupt flag is cleared
-                fn is_irq_clear(&mut self) -> bool {
+                fn is_irq_clear(&self) -> bool {
                     self.tim.sr.read().uif().bit_is_clear()
                 }
 
