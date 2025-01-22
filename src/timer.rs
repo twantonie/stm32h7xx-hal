@@ -283,11 +283,17 @@ pub enum Event {
 }
 
 pub trait HalTimer {
+    fn set_timeout_ticks(&mut self, ticks: u32);
+
     fn set_freq(&mut self, timeout: Hertz);
 
     fn set_timeout<T>(&mut self, timeout: T)
     where
         T: Into<core::time::Duration>;
+
+    fn duration_to_ticks<Duration>(&self, duration: Duration) -> u32
+    where
+        Duration: Into<core::time::Duration>;
 
     fn set_tick_freq(&mut self, frequency: Hertz);
 
@@ -409,26 +415,6 @@ macro_rules! hal {
                     }
                 }
 
-                /// Sets the timer's prescaler and auto reload register so that the timer will reach
-                /// the ARR after `ticks - 1` amount of timer clock ticks.
-                ///
-                /// ```
-                /// // Set auto reload register to 50000 and prescaler to divide by 2.
-                /// timer.set_timeout_ticks(100000);
-                /// ```
-                ///
-                /// This function will round down if the prescaler is used to extend the range:
-                /// ```
-                /// // Set auto reload register to 50000 and prescaler to divide by 2.
-                /// timer.set_timeout_ticks(100001);
-                /// ```
-                fn set_timeout_ticks(&mut self, ticks: u32) {
-                    let (psc, arr) = calculate_timeout_ticks_register_values(ticks);
-                    self.tim.psc.write(|w| w.psc().bits(psc));
-                    #[allow(unused_unsafe)] // method is safe for some timers
-                    self.tim.arr.write(|w| unsafe { w.bits(u32(arr)) });
-                }
-
                 /// Releases the TIM peripheral
                 pub fn free(mut self) -> ($TIMX, rec::$Rec) {
                     // pause counter
@@ -449,6 +435,27 @@ macro_rules! hal {
             }
 
             impl HalTimer for Timer<$TIMX> {
+
+                /// Sets the timer's prescaler and auto reload register so that the timer will reach
+                /// the ARR after `ticks - 1` amount of timer clock ticks.
+                ///
+                /// ```
+                /// // Set auto reload register to 50000 and prescaler to divide by 2.
+                /// timer.set_timeout_ticks(100000);
+                /// ```
+                ///
+                /// This function will round down if the prescaler is used to extend the range:
+                /// ```
+                /// // Set auto reload register to 50000 and prescaler to divide by 2.
+                /// timer.set_timeout_ticks(100001);
+                /// ```
+                fn set_timeout_ticks(&mut self, ticks: u32) {
+                    let (psc, arr) = calculate_timeout_ticks_register_values(ticks);
+                    self.tim.psc.write(|w| w.psc().bits(psc));
+                    #[allow(unused_unsafe)] // method is safe for some timers
+                    self.tim.arr.write(|w| unsafe { w.bits(u32(arr)) });
+                }
+
                 /// Configures the timer's frequency and counter reload value
                 /// so that it underflows at the timeout's frequency
                 fn set_freq(&mut self, timeout: Hertz) {
@@ -491,6 +498,21 @@ macro_rules! hal {
                     .unwrap_or(u32::max_value());
 
                     self.set_timeout_ticks(ticks.max(1));
+                }
+
+                fn duration_to_ticks<Duration>(&self, duration: Duration) -> u32
+                where
+                    Duration: Into<core::time::Duration>
+                {
+                    const NANOS_PER_SECOND: u64 = 1_000_000_000;
+                    let timeout = duration.into();
+                    let clk = self.clk as u64;
+
+                    u32::try_from(
+                        clk * timeout.as_secs() +
+                        clk * u64::from(timeout.subsec_nanos()) / NANOS_PER_SECOND,
+                    )
+                    .unwrap_or(u32::max_value())
                 }
 
 
